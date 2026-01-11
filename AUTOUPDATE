@@ -1,6 +1,16 @@
 #!/bin/bash
+
 LOGFILE="/home/richard/logs/cron-jobs.log"
-exec >> "$LOGFILE" 2>&1
+
+# Use tee if running interactively, otherwise just redirect for cron
+# This way, output goes to both terminal and logfile
+if [[ -t 1 ]]; then
+    # stdout is a terminal → pipe through tee
+    exec > >(tee -a "$LOGFILE") 2>&1
+else
+    # cron → just append to log
+    exec >> "$LOGFILE" 2>&1
+fi
 
 log() {
     echo "[$(date '+%Y-%m-%d %H:%M:%S')] [$0] $*"
@@ -8,7 +18,7 @@ log() {
 
 log "AUTOUPDATE script started"
 
-cd "$(dirname "${BASH_SOURCE[0]}")"
+cd "$(dirname "${BASH_SOURCE[0]}")" || exit 1
 
 # Pull latest changes quietly
 git pull --ff-only --quiet
