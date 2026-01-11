@@ -13,7 +13,7 @@ else
 fi
 
 log() {
-    echo "[$(date '+%Y-%m-%d %H:%M:%S')] [$0] $*"
+    echo "VRSData [$(date '+%Y-%m-%d %H:%M:%S')] [$0] $*"
 }
 
 log "AUTOUPDATE script started"
