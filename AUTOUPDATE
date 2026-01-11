@@ -1,17 +1,27 @@
-#!/usr/bin/env bash
+#!/bin/bash
+LOGFILE="/home/richard/logs/cron-jobs.log"
+exec >> "$LOGFILE" 2>&1
 
 log() {
     echo "[$(date '+%Y-%m-%d %H:%M:%S')] [$0] $*"
 }
 
+log "AUTOUPDATE script started"
 
-cd $(dirname ${BASH_SOURCE[0]})
+cd "$(dirname "${BASH_SOURCE[0]}")"
 
-   git pull
+# Pull latest changes quietly
+git pull --ff-only --quiet
 
-if [[ -n $(git status -s) ]]; then
-    echo "Changes found. Pushing changes..."
-  git add -A && git commit -m 'Updated '$(date +%Y-%m-%d) && git push
+# Check for local changes
+if [[ -n $(git status --porcelain) ]]; then
+    log "Changes found. Pushing updates..."
+    git add -A
+    git commit -m "Updated $(date +%Y-%m-%d)"
+    git push --quiet
+    log "Changes pushed"
 else
-    echo "No changes found. Skip pushing."
+    log "No changes found. Nothing pushed"
 fi
+
+log "AUTOUPDATE script finished"
