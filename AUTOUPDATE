@@ -14,7 +14,6 @@
 #  Example:
 #      git config --global --add safe.directory /home/richard/VRSData
 #
-#  This is required by Git design and is NOT a bug.
 # ─────────────────────────────────────────────────────────────────────────────
 #
 
@@ -23,17 +22,19 @@ set -e
 # Resolve user + home directory safely
 RUN_USER="$(id -un)"
 RUN_HOME="$(getent passwd "$RUN_USER" | cut -d: -f6)"
-
-# Fallback (just in case)
 : "${RUN_HOME:=$HOME}"
 
 LOGFILE="$RUN_HOME/logs/cron-jobs.log"
-
-# Ensure log directory exists
 mkdir -p "$(dirname "$LOGFILE")"
 
-# Log everything
-exec >>"$LOGFILE" 2>&1
+# --- TTY-aware logging ---
+if [[ -t 1 ]]; then
+    # Interactive: show output + log
+    exec > >(tee -a "$LOGFILE") 2>&1
+else
+    # Cron: log only
+    exec >>"$LOGFILE" 2>&1
+fi
 
 # Git safety for cron
 export HOME="$RUN_HOME"
@@ -44,23 +45,20 @@ log() {
     echo "VRS Data [$(date '+%Y-%m-%d %H:%M:%S')] [$0] $*"
 }
 
-# Lock to prevent overlapping runs (per user)
+# Prevent overlapping runs (per user)
 LOCKFILE="/tmp/VRSData-${RUN_USER}.lock"
 exec 9>"$LOCKFILE" || exit 1
 flock -n 9 || exit 0
 
-# Change to repo directory (script location)
 cd "$(dirname "${BASH_SOURCE[0]}")" || exit 1
 
 log "AUTOUPDATE started (user=$RUN_USER)"
 
-# Pull safely (no merges)
 git pull --ff-only || {
     log "ERROR: git pull failed"
     exit 1
 }
 
-# Commit & push if changes exist
 if [[ -n $(git status --porcelain) ]]; then
     log "Changes found. Committing and pushing..."
     git add -A
@@ -72,6 +70,15 @@ else
 fi
 
 log "AUTOUPDATE finished"
+
+
+
+
+
+
+
+
+
 
 
 ##!/bin/bash
