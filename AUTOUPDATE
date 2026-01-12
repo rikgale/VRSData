@@ -1,28 +1,104 @@
-#!/bin/bash
+#!/usr/bin/env bash
+#
+# ─────────────────────────────────────────────────────────────────────────────
+#  IMPORTANT – ONE-TIME SETUP REQUIRED (PER USER)
+#
+#  Each user that runs this script (manually or via cron) must explicitly
+#  mark the repository directory as trusted, due to Git security protections
+#  introduced in Git 2.35+ ("dubious ownership" checks).
+#
+#  Run ONCE as the user that will execute this script:
+#
+#      git config --global --add safe.directory /path/to/VRSData
+#
+#  Example:
+#      git config --global --add safe.directory /home/richard/VRSData
+#
+#  This is required by Git design and is NOT a bug.
+# ─────────────────────────────────────────────────────────────────────────────
+#
 
-LOGFILE="/home/richard/logs/cron-jobs.log"
+set -e
 
-# Use tee if running interactively, otherwise just redirect for cron
-# This way, output goes to both terminal and logfile
-if [[ -t 1 ]]; then
-    # stdout is a terminal → pipe through tee
-    exec > >(tee -a "$LOGFILE") 2>&1
-else
-    # cron → just append to log
-    exec >> "$LOGFILE" 2>&1
-fi
+# Resolve user + home directory safely
+RUN_USER="$(id -un)"
+RUN_HOME="$(getent passwd "$RUN_USER" | cut -d: -f6)"
+
+# Fallback (just in case)
+: "${RUN_HOME:=$HOME}"
+
+LOGFILE="$RUN_HOME/logs/cron-jobs.log"
+
+# Ensure log directory exists
+mkdir -p "$(dirname "$LOGFILE")"
+
+# Log everything
+exec >>"$LOGFILE" 2>&1
+
+# Git safety for cron
+export HOME="$RUN_HOME"
+export USER="$RUN_USER"
+export GIT_PAGER=cat
 
 log() {
-    echo "VRSData [$(date '+%Y-%m-%d %H:%M:%S')] [$0] $*"
+    echo "VRS Data [$(date '+%Y-%m-%d %H:%M:%S')] [$0] $*"
 }
 
-cd $(dirname ${BASH_SOURCE[0]})
+# Lock to prevent overlapping runs (per user)
+LOCKFILE="/tmp/VRSData-${RUN_USER}.lock"
+exec 9>"$LOCKFILE" || exit 1
+flock -n 9 || exit 0
 
-   git pull
+# Change to repo directory (script location)
+cd "$(dirname "${BASH_SOURCE[0]}")" || exit 1
 
-if [[ -n $(git status -s) ]]; then
-    log "Changes found. Pushing changes..."
-  git add -A && git commit -m 'Updated '$(date +%Y-%m-%d) && git push
+log "AUTOUPDATE started (user=$RUN_USER)"
+
+# Pull safely (no merges)
+git pull --ff-only || {
+    log "ERROR: git pull failed"
+    exit 1
+}
+
+# Commit & push if changes exist
+if [[ -n $(git status --porcelain) ]]; then
+    log "Changes found. Committing and pushing..."
+    git add -A
+    git commit -m "Updated $(date +%Y-%m-%d)"
+    git push
+    log "Changes pushed successfully"
 else
     log "No changes found. Skip pushing."
 fi
+
+log "AUTOUPDATE finished"
+
+
+##!/bin/bash
+
+#LOGFILE="/home/richard/logs/cron-jobs.log"
+
+# Use tee if running interactively, otherwise just redirect for cron
+# This way, output goes to both terminal and logfile
+#if [[ -t 1 ]]; then
+#    # stdout is a terminal → pipe through tee
+#    exec > >(tee -a "$LOGFILE") 2>&1
+#else
+#    # cron → just append to log
+#    exec >> "$LOGFILE" 2>&1
+#fi
+
+#log() {
+#    echo "VRSData [$(date '+%Y-%m-%d %H:%M:%S')] [$0] $*"
+#}
+
+#cd $(dirname ${BASH_SOURCE[0]})
+
+#   git pull
+
+#if [[ -n $(git status -s) ]]; then
+#    log "Changes found. Pushing changes..."
+#  git add -A && git commit -m 'Updated '$(date +%Y-%m-%d) && git push
+#else
+#    log "No changes found. Skip pushing."
+#fi
