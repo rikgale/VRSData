@@ -16,22 +16,13 @@ log() {
     echo "VRSData [$(date '+%Y-%m-%d %H:%M:%S')] [$0] $*"
 }
 
-log "AUTOUPDATE script started"
+cd $(dirname ${BASH_SOURCE[0]})
 
-cd "$(dirname "${BASH_SOURCE[0]}")" || exit 1
+   git pull
 
-# Pull latest changes quietly
-git pull --ff-only --quiet
-
-# Check for local changes
-if [[ -n $(git status --porcelain) ]]; then
-    log "Changes found. Pushing updates..."
-    git add -A
-    git commit -m "Updated $(date +%Y-%m-%d)"
-    git push --quiet
-    log "Changes pushed"
+if [[ -n $(git status -s) ]]; then
+    log "Changes found. Pushing changes..."
+  git add -A && git commit -m 'Updated '$(date +%Y-%m-%d) && git push
 else
-    log "No changes found. Nothing pushed"
+    log "No changes found. Skip pushing."
 fi
-
-log "AUTOUPDATE script finished"
