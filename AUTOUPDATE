@@ -41,8 +41,12 @@ export HOME="$RUN_HOME"
 export USER="$RUN_USER"
 export GIT_PAGER=cat
 
+# Get the name of the directory containing the script
+SCRIPT_DIR_NAME="$(basename "$(dirname "${BASH_SOURCE[0]}")")"
+
+# Logging Function
 log() {
-    echo "VRS Data [$(date '+%Y-%m-%d %H:%M:%S')] [$0] $*"
+    echo "$SCRIPT_DIR_NAME [$(date '+%Y-%m-%d %H:%M:%S')] [$0] $*"
 }
 
 # Prevent overlapping runs (per user)
