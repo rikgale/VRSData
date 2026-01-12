@@ -9,10 +9,10 @@
 #
 #  Run ONCE as the user that will execute this script:
 #
-#      git config --global --add safe.directory /path/to/VRSData
+#      git config --global --add safe.directory /path/to/repo
 #
 #  Example:
-#      git config --global --add safe.directory /home/richard/VRSData
+#      git config --global --add safe.directory /home/$USER/repo_name
 #
 # ─────────────────────────────────────────────────────────────────────────────
 #
@@ -74,42 +74,3 @@ else
 fi
 
 log "AUTOUPDATE finished"
-
-
-
-
-
-
-
-
-
-
-
-##!/bin/bash
-
-#LOGFILE="/home/richard/logs/cron-jobs.log"
-
-# Use tee if running interactively, otherwise just redirect for cron
-# This way, output goes to both terminal and logfile
-#if [[ -t 1 ]]; then
-#    # stdout is a terminal → pipe through tee
-#    exec > >(tee -a "$LOGFILE") 2>&1
-#else
-#    # cron → just append to log
-#    exec >> "$LOGFILE" 2>&1
-#fi
-
-#log() {
-#    echo "VRSData [$(date '+%Y-%m-%d %H:%M:%S')] [$0] $*"
-#}
-
-#cd $(dirname ${BASH_SOURCE[0]})
-
-#   git pull
-
-#if [[ -n $(git status -s) ]]; then
-#    log "Changes found. Pushing changes..."
-#  git add -A && git commit -m 'Updated '$(date +%Y-%m-%d) && git push
-#else
-#    log "No changes found. Skip pushing."
-#fi
