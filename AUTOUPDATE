@@ -42,7 +42,7 @@ export USER="$RUN_USER"
 export GIT_PAGER=cat
 
 # Get the name of the directory containing the script
-SCRIPT_DIR_NAME="$(basename "$(dirname "${BASH_SOURCE[0]}")")"
+SCRIPT_DIR_NAME="$(basename "$(cd "$(dirname "${BASH_SOURCE[0]}")" >/dev/null 2>&1 && pwd)")"
 
 # Logging Function
 log() {
