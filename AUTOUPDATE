@@ -89,13 +89,12 @@ log "AUTOUPDATE started (user=$RUN_USER)"
 git_prefixed git pull --ff-only
 
 if [[ -n $(git status --porcelain) ]]; then
-    log "Changes found. Committing and pushing..."
+    log "Changes found. Committing..."
     git add -A
     git_prefixed git commit -m "Updated $(date +%Y-%m-%d)"
-    git_prefixed git push
-    log "Changes pushed successfully"
-else
-    log "No changes found. Skip pushing."
 fi
+
+log "Pushing to origin..."
+git_prefixed git push
 
 log "AUTOUPDATE finished"
