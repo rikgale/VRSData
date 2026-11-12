@@ -1,100 +1,458 @@
 #!/usr/bin/env bash
 #
-# ─────────────────────────────────────────────────────────────────────────────
-#  IMPORTANT – ONE-TIME SETUP REQUIRED (PER USER)
+# AUTOUPDATE - Automatic Git repository synchronisation
 #
-#  Each user that runs this script (manually or via cron) must explicitly
-#  mark the repository directory as trusted, due to Git security protections
-#  introduced in Git 2.35+ ("dubious ownership" checks).
+# Suitable for:
+#   VRSData
+#   LocalAircraft
 #
-#  Run ONCE as the user that will execute this script:
+# One-time setup for each user/repository:
 #
-#      git config --global --add safe.directory /path/to/repo
-#
-#  Example:
-#      git config --global --add safe.directory /home/$USER/repo_name
-#
-# ─────────────────────────────────────────────────────────────────────────────
+#   git config --global --add safe.directory /path/to/repository
 #
 
-set -e
+set -Eeuo pipefail
 
-# -----------------------------
-# Detect user and home directory dynamically
-# -----------------------------
+# ---------------------------------------------------------------------------
+# Detect the executing user and home directory
+# ---------------------------------------------------------------------------
+
 RUN_USER="$(id -un)"
 RUN_HOME="$(getent passwd "$RUN_USER" | cut -d: -f6)"
 : "${RUN_HOME:=$HOME}"
 
-# -----------------------------
-# Log file setup
-# -----------------------------
-LOGFILE="$RUN_HOME/logs/cron-jobs.log"
-mkdir -p "$(dirname "$LOGFILE")"
-
-# -----------------------------
-# TTY-aware logging
-# -----------------------------
-if [[ -t 1 ]]; then
-    # Interactive: show output + log
-    exec > >(tee -a "$LOGFILE") 2>&1
-else
-    # Cron: log only
-    exec >>"$LOGFILE" 2>&1
-fi
-
-# -----------------------------
-# Git safety for cron
-# -----------------------------
 export HOME="$RUN_HOME"
 export USER="$RUN_USER"
 export GIT_PAGER=cat
+export GIT_TERMINAL_PROMPT=0
 
-# -----------------------------
-# Directory name for log prefix
-# -----------------------------
-SCRIPT_DIR_NAME="$(basename "$(cd "$(dirname "${BASH_SOURCE[0]}")" >/dev/null 2>&1 && pwd)")"
+# ---------------------------------------------------------------------------
+# Identify the repository containing this script
+# ---------------------------------------------------------------------------
 
-log() {
-    echo "$SCRIPT_DIR_NAME [$(date '+%Y-%m-%d %H:%M:%S')] $*"
-}
+SCRIPT_DIR="$(
+    cd "$(dirname "${BASH_SOURCE[0]}")" >/dev/null 2>&1
+    pwd
+)"
 
-# -----------------------------
-# Prevent overlapping runs (per user + repo)
-# -----------------------------
-LOCKFILE="/tmp/${SCRIPT_DIR_NAME}-${RUN_USER}.lock"
-exec 9>"$LOCKFILE" || exit 1
-flock -n 9 || exit 0
+SCRIPT_DIR_NAME="$(basename "$SCRIPT_DIR")"
 
-# -----------------------------
-# Change to repo directory
-# -----------------------------
-cd "$(dirname "${BASH_SOURCE[0]}")" || exit 1
+# ---------------------------------------------------------------------------
+# Logging
+# ---------------------------------------------------------------------------
 
-# -----------------------------
-# Prefix Git output reliably
-# -----------------------------
-git_prefixed() {
-    # Usage: git_prefixed git <args>
-    "$@" 2>&1 | while IFS= read -r line; do
-        echo "$SCRIPT_DIR_NAME [$(date '+%Y-%m-%d %H:%M:%S')] $line"
-    done
-}
+LOGFILE="$RUN_HOME/logs/cron-jobs.log"
+mkdir -p "$(dirname "$LOGFILE")"
 
-# -----------------------------
-# Begin auto-update
-# -----------------------------
-log "AUTOUPDATE started (user=$RUN_USER)"
-
-git_prefixed git pull --ff-only
-
-if [[ -n $(git status --porcelain) ]]; then
-    log "Changes found. Committing..."
-    git add -A
-    git_prefixed git commit -m "Updated $(date +%Y-%m-%d)"
+if [[ -t 1 ]]; then
+    # Manual run: display output and append it to the log
+    exec > >(tee -a "$LOGFILE") 2>&1
+else
+    # Cron run: append output to the log only
+    exec >>"$LOGFILE" 2>&1
 fi
 
-log "Pushing to origin..."
-git_prefixed git push
+log() {
+    printf '%s [%s] %s\n' \
+        "$SCRIPT_DIR_NAME" \
+        "$(date '+%Y-%m-%d %H:%M:%S')" \
+        "$*"
+}
 
-log "AUTOUPDATE finished"
+# ---------------------------------------------------------------------------
+# Prevent overlapping runs for the same user and repository
+# ---------------------------------------------------------------------------
+
+LOCKFILE="/tmp/${SCRIPT_DIR_NAME}-${RUN_USER}.lock"
+
+exec 9>"$LOCKFILE"
+
+if ! flock -n 9; then
+    log "Another AUTOUPDATE instance is already running. Exiting."
+    exit 0
+fi
+
+# ---------------------------------------------------------------------------
+# Change to the repository directory
+# ---------------------------------------------------------------------------
+
+cd "$SCRIPT_DIR"
+
+# ---------------------------------------------------------------------------
+# Run a command and prefix each line of its output
+#
+# Because pipefail is enabled, failure of the command on the left side of the
+# pipe is preserved. This fixes the previous false-success behaviour.
+# ---------------------------------------------------------------------------
+
+run_prefixed() {
+    "$@" 2>&1 |
+        while IFS= read -r line || [[ -n "$line" ]]; do
+            log "$line"
+        done
+}
+
+# ---------------------------------------------------------------------------
+# General error handler
+# ---------------------------------------------------------------------------
+
+on_error() {
+    local exit_code=$?
+    local line_number="${1:-unknown}"
+
+    trap - ERR
+
+    log "ERROR: AUTOUPDATE failed at line $line_number."
+    log "Exit code: $exit_code"
+    log "Repository synchronisation was not completed."
+
+    exit "$exit_code"
+}
+
+trap 'on_error "$LINENO"' ERR
+
+# ---------------------------------------------------------------------------
+# Begin
+# ---------------------------------------------------------------------------
+
+log "AUTOUPDATE started (user=$RUN_USER)"
+
+# ---------------------------------------------------------------------------
+# Verify that this is a Git repository
+# ---------------------------------------------------------------------------
+
+if ! git rev-parse --is-inside-work-tree >/dev/null 2>&1; then
+    log "ERROR: $SCRIPT_DIR is not a Git repository."
+    exit 1
+fi
+
+# ---------------------------------------------------------------------------
+# Identify the current branch
+# ---------------------------------------------------------------------------
+
+BRANCH="$(git symbolic-ref --quiet --short HEAD || true)"
+
+if [[ -z "$BRANCH" ]]; then
+    log "ERROR: Repository is in detached-HEAD state."
+    log "Check out the required branch before running AUTOUPDATE."
+    exit 1
+fi
+
+log "Current branch: $BRANCH"
+
+# ---------------------------------------------------------------------------
+# Locate the Git metadata directory
+# ---------------------------------------------------------------------------
+
+GIT_DIR="$(git rev-parse --absolute-git-dir)"
+
+# ---------------------------------------------------------------------------
+# Refuse to interfere with an unfinished Git operation
+# ---------------------------------------------------------------------------
+
+if [[ -f "$GIT_DIR/MERGE_HEAD" ]]; then
+    log "ERROR: A merge is already in progress."
+    log "Resolve it or run 'git merge --abort' before using AUTOUPDATE."
+    exit 1
+fi
+
+if [[ -d "$GIT_DIR/rebase-merge" ]] ||
+   [[ -d "$GIT_DIR/rebase-apply" ]]; then
+    log "ERROR: A rebase is already in progress."
+    log "Resolve it or run 'git rebase --abort' before using AUTOUPDATE."
+    exit 1
+fi
+
+if [[ -f "$GIT_DIR/CHERRY_PICK_HEAD" ]]; then
+    log "ERROR: A cherry-pick is already in progress."
+    log "Resolve it or run 'git cherry-pick --abort' before using AUTOUPDATE."
+    exit 1
+fi
+
+if [[ -f "$GIT_DIR/REVERT_HEAD" ]]; then
+    log "ERROR: A revert is already in progress."
+    log "Resolve it or run 'git revert --abort' before using AUTOUPDATE."
+    exit 1
+fi
+
+# ---------------------------------------------------------------------------
+# Detect unresolved conflict files
+# ---------------------------------------------------------------------------
+
+CONFLICT_FILES="$(git diff --name-only --diff-filter=U)"
+
+if [[ -n "$CONFLICT_FILES" ]]; then
+    log "ERROR: Unresolved conflict files exist:"
+
+    while IFS= read -r file; do
+        [[ -n "$file" ]] && log "  $file"
+    done <<< "$CONFLICT_FILES"
+
+    log "Resolve the conflicts before running AUTOUPDATE."
+    exit 1
+fi
+
+# ---------------------------------------------------------------------------
+# Check that origin exists
+# ---------------------------------------------------------------------------
+
+if ! git remote get-url origin >/dev/null 2>&1; then
+    log "ERROR: Git remote 'origin' is not configured."
+    exit 1
+fi
+
+# ---------------------------------------------------------------------------
+# File-size protection
+#
+# GitHub blocks normal Git blobs over 100 MiB.
+# This script uses 99 MiB as a safety margin.
+# ---------------------------------------------------------------------------
+
+MAX_FILE_BYTES=$((99 * 1024 * 1024))
+LARGE_FILE_FOUND=0
+
+log "Checking working files for the 99 MiB safety limit..."
+
+while IFS= read -r -d '' file; do
+    file_size="$(stat -c '%s' "$file")"
+
+    if (( file_size > MAX_FILE_BYTES )); then
+        human_size="$(du -h "$file" | cut -f1)"
+
+        log "ERROR: Oversized file detected:"
+        log "  $file"
+        log "  Size: $human_size ($file_size bytes)"
+
+        LARGE_FILE_FOUND=1
+    fi
+done < <(
+    find . \
+        -path './.git' -prune -o \
+        -type f \
+        -size +"${MAX_FILE_BYTES}"c \
+        -print0
+)
+
+if (( LARGE_FILE_FOUND != 0 )); then
+    log "Files larger than 99 MiB will not be committed."
+    log "Nothing has been staged, committed, rebased, or pushed."
+    exit 1
+fi
+
+log "Working-file size check passed."
+
+# ---------------------------------------------------------------------------
+# Stage and commit local working-tree changes
+# ---------------------------------------------------------------------------
+
+if [[ -n "$(git status --porcelain)" ]]; then
+    log "Local changes detected. Staging changes..."
+
+    run_prefixed git add -A
+
+    # Check every blob currently represented in the Git index.
+    STAGED_LARGE_OBJECT_FOUND=0
+
+    while IFS= read -r object_id; do
+        [[ -z "$object_id" ]] && continue
+
+        object_size="$(git cat-file -s "$object_id")"
+
+        if (( object_size > MAX_FILE_BYTES )); then
+            log "ERROR: Oversized object found in the Git index:"
+            log "  Object: $object_id"
+            log "  Size: $object_size bytes"
+
+            STAGED_LARGE_OBJECT_FOUND=1
+        fi
+    done < <(
+        git ls-files --stage |
+            awk '{print $2}' |
+            sort -u
+    )
+
+    if (( STAGED_LARGE_OBJECT_FOUND != 0 )); then
+        log "Commit cancelled because the index contains an oversized blob."
+        log "Unstaging the changes..."
+
+        run_prefixed git reset
+
+        exit 1
+    fi
+
+    if git diff --cached --quiet; then
+        log "No staged changes require a commit."
+    else
+        log "Committing local changes..."
+
+        run_prefixed git commit \
+            -m "Updated $(date '+%Y-%m-%d')"
+
+        log "Local commit created successfully."
+    fi
+else
+    log "No uncommitted local changes."
+fi
+
+# ---------------------------------------------------------------------------
+# Fetch the remote repository
+# ---------------------------------------------------------------------------
+
+log "Fetching origin..."
+
+if ! run_prefixed git fetch origin; then
+    log "ERROR: Unable to fetch from origin."
+    log "Any local commits remain intact."
+    exit 1
+fi
+
+# ---------------------------------------------------------------------------
+# Confirm that the corresponding remote branch exists
+# ---------------------------------------------------------------------------
+
+if ! git show-ref \
+    --verify \
+    --quiet \
+    "refs/remotes/origin/$BRANCH"; then
+
+    log "ERROR: Remote branch origin/$BRANCH does not exist."
+    exit 1
+fi
+
+# ---------------------------------------------------------------------------
+# Rebase local commits over the current remote branch
+#
+# This avoids automatically creating merge commits.
+# If a conflict occurs, the attempted rebase is aborted and the local commit
+# is restored to its pre-rebase state.
+# ---------------------------------------------------------------------------
+
+log "Rebasing local commits onto origin/$BRANCH..."
+
+if ! run_prefixed git rebase "origin/$BRANCH"; then
+    log "ERROR: Rebase failed or a conflict was detected."
+
+    if [[ -d "$GIT_DIR/rebase-merge" ]] ||
+       [[ -d "$GIT_DIR/rebase-apply" ]]; then
+
+        log "Aborting the unsuccessful rebase..."
+
+        if run_prefixed git rebase --abort; then
+            log "Rebase aborted successfully."
+            log "The local commit has been preserved."
+        else
+            log "ERROR: Automatic rebase abort failed."
+            log "Manual intervention is required."
+        fi
+    fi
+
+    log "Nothing has been pushed."
+    exit 1
+fi
+
+log "Rebase completed successfully."
+
+# ---------------------------------------------------------------------------
+# Check all blobs in commits that are about to be pushed
+#
+# This catches oversized files buried in outgoing local history, even if the
+# current working copy is smaller. This is what would have caught the 6.58 GB
+# BaseStation.zip before the failed VRSData push.
+# ---------------------------------------------------------------------------
+
+log "Checking outgoing Git history for oversized blobs..."
+
+OVERSIZED_HISTORY_FOUND=0
+
+while IFS=' ' read -r object_size object_type object_id object_path; do
+    [[ "$object_type" != "blob" ]] && continue
+    [[ -z "$object_size" ]] && continue
+
+    if (( object_size > MAX_FILE_BYTES )); then
+        log "ERROR: Oversized blob found in outgoing Git history:"
+        log "  Path: ${object_path:-unknown}"
+        log "  Object: $object_id"
+        log "  Size: $object_size bytes"
+
+        OVERSIZED_HISTORY_FOUND=1
+    fi
+done < <(
+    git rev-list --objects "origin/$BRANCH..HEAD" |
+        git cat-file \
+            --batch-check='%(objectsize) %(objecttype) %(objectname) %(rest)'
+)
+
+if (( OVERSIZED_HISTORY_FOUND != 0 )); then
+    log "Push cancelled."
+    log "Oversized blobs must be removed from local Git history."
+    exit 1
+fi
+
+log "Outgoing-history size check passed."
+
+# ---------------------------------------------------------------------------
+# Count local commits awaiting push
+# ---------------------------------------------------------------------------
+
+AHEAD_COUNT="$(
+    git rev-list \
+        --count \
+        "origin/$BRANCH..HEAD"
+)"
+
+# ---------------------------------------------------------------------------
+# Push if necessary
+# ---------------------------------------------------------------------------
+
+if (( AHEAD_COUNT > 0 )); then
+    log "$AHEAD_COUNT local commit(s) awaiting push."
+    log "Pushing to origin/$BRANCH..."
+
+    if ! run_prefixed git push origin "$BRANCH"; then
+        log "ERROR: Git push failed."
+        log "The local commits remain intact."
+        log "AUTOUPDATE did not complete successfully."
+        exit 1
+    fi
+
+    log "Changes pushed successfully."
+else
+    log "No commits need to be pushed."
+    log "Local and remote branches are already synchronised."
+fi
+
+# ---------------------------------------------------------------------------
+# Refresh remote-tracking information after a successful push
+# ---------------------------------------------------------------------------
+
+run_prefixed git fetch origin
+
+# ---------------------------------------------------------------------------
+# Verify the final state
+# ---------------------------------------------------------------------------
+
+FINAL_AHEAD="$(
+    git rev-list \
+        --count \
+        "origin/$BRANCH..HEAD"
+)"
+
+FINAL_BEHIND="$(
+    git rev-list \
+        --count \
+        "HEAD..origin/$BRANCH"
+)"
+
+if (( FINAL_AHEAD != 0 || FINAL_BEHIND != 0 )); then
+    log "ERROR: Final branch verification failed."
+    log "Local commits ahead: $FINAL_AHEAD"
+    log "Local commits behind: $FINAL_BEHIND"
+    exit 1
+fi
+
+log "Final repository status:"
+run_prefixed git status -sb
+
+log "AUTOUPDATE finished successfully."
+
+exit 0
